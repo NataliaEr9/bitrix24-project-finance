@@ -33,8 +33,7 @@
     categories: [],
     operations: [],
     users: new Map(),
-    selectedMembers: [],
-    isLeader: false
+    selectedMembers: []
   };
 
   const $ = (id) => document.getElementById(id);
@@ -90,15 +89,6 @@
       return { code: "watch", label: "На контроле", hint: "Рентабельность ниже 20%" };
     }
     return { code: "profit", label: "Прибыльный", hint: "Рентабельность 20% и выше" };
-  }
-
-  function pluralProjects(count) {
-    const n = Math.abs(Number(count)) % 100;
-    const n1 = n % 10;
-    if (n > 10 && n < 20) return "проектов";
-    if (n1 > 1 && n1 < 5) return "проекта";
-    if (n1 === 1) return "проект";
-    return "проектов";
   }
 
   function toast(message) {
@@ -621,8 +611,6 @@
     $("totalProfit").className = m.profitCents >= 0 ? "value-positive" : "value-negative";
     $("totalMargin").textContent = F.formatPercent(m.marginPct);
     $("totalMargin").className = m.marginPct !== null && m.marginPct >= 0 ? "value-positive" : "value-negative";
-    $("totalProjectsCount").textContent = String(state.projects.length);
-    $("totalOperationsCount").textContent = String(state.operations.length);
   }
 
   function renderProjects() {
@@ -635,7 +623,7 @@
       const members = project.members.map(userName);
       const membersHtml = members.length
         ? members.map(memberChipHtml).join("")
-        : '<span class="member-pill empty">Сотрудники не назначены</span>';
+        : '<span class="member-pill member-empty">Сотрудники не назначены</span>';
       const opCount = state.operations.filter(o => o.projectId === String(project.id)).length;
       const lastDate = lastOperationDate(project.id);
       const fillWidth = profitFillWidth(m.marginPct);
@@ -769,93 +757,12 @@
       </span>`).join("");
   }
 
-  function renderLeader() {
-    if (!state.isLeader) return;
-
-    const rows = state.projects.map(project => {
-      const metrics = projectMetrics(project.id);
-      const status = projectStatus(project.id);
-      return { project, metrics, status };
-    });
-
-    const profitable = rows.filter(r => r.status.code === "profit").length;
-    const watch = rows.filter(r => r.status.code === "watch").length;
-    const loss = rows.filter(r => r.status.code === "loss").length;
-    const noData = rows.filter(r => r.status.code === "empty").length;
-
-    $("leaderStatusSummary").innerHTML = [
-      { cls: "profit", label: "Прибыльные", value: profitable, note: "Рентабельность от 20%" },
-      { cls: "watch", label: "На контроле", value: watch, note: "Рентабельность ниже 20%" },
-      { cls: "loss", label: "Убыточные", value: loss, note: "Расходы выше доходов" },
-      { cls: "empty", label: "Без данных", value: noData, note: "Нет финансовых операций" }
-    ].map(item => `
-      <article class="leader-status-card ${item.cls}">
-        <span class="leader-status-dot"></span>
-        <div><span>${item.label}</span><strong>${item.value}</strong><small>${item.note}</small></div>
-      </article>`).join("");
-
-    const attention = rows
-      .filter(r => r.status.code === "loss" || r.status.code === "watch")
-      .sort((a, b) => a.metrics.profitCents - b.metrics.profitCents);
-
-    $("leaderAttention").innerHTML = attention.length ? attention.map(r => `
-      <div class="leader-list-item">
-        <div class="leader-list-main">
-          <span class="project-status status-${r.status.code}">${r.status.label}</span>
-          <div><strong>${escapeHtml(r.project.name)}</strong><small>${escapeHtml(r.status.hint)}</small></div>
-        </div>
-        <div class="leader-list-value ${r.metrics.profitCents >= 0 ? "value-positive" : "value-negative"}">
-          ${F.formatMoney(r.metrics.profitCents)}
-          <small>${F.formatPercent(r.metrics.marginPct)}</small>
-        </div>
-      </div>`).join("") : '<div class="leader-empty">Нет проектов, требующих внимания.</div>';
-
-    const profitRanking = [...rows].sort((a, b) => b.metrics.profitCents - a.metrics.profitCents);
-    const maxProfitAbs = Math.max(1, ...profitRanking.map(r => Math.abs(r.metrics.profitCents)));
-    $("leaderProfitRanking").innerHTML = profitRanking.length ? profitRanking.map((r, index) => {
-      const width = Math.max(4, Math.round(Math.abs(r.metrics.profitCents) / maxProfitAbs * 100));
-      return `
-        <div class="bar-row">
-          <div class="bar-row-head"><span><b>${index + 1}.</b> ${escapeHtml(r.project.name)}</span><strong class="${r.metrics.profitCents >= 0 ? "value-positive" : "value-negative"}">${F.formatMoney(r.metrics.profitCents)}</strong></div>
-          <div class="bar-track"><div class="bar-fill ${r.metrics.profitCents < 0 ? "negative" : "positive"}" style="width:${width}%"></div></div>
-        </div>`;
-    }).join("") : '<div class="leader-empty">Пока нет проектов для рейтинга.</div>';
-
-    const expenseMap = new Map();
-    state.operations.filter(o => o.type === "expense").forEach(o => {
-      expenseMap.set(o.categoryId, (expenseMap.get(o.categoryId) || 0) + o.amountCents);
-    });
-    const expenseRows = [...expenseMap.entries()]
-      .map(([categoryId, amountCents]) => ({ categoryId, amountCents, name: categoryName(categoryId) }))
-      .sort((a, b) => b.amountCents - a.amountCents);
-    const maxExpense = Math.max(1, ...expenseRows.map(r => r.amountCents));
-    $("leaderExpenseBreakdown").innerHTML = expenseRows.length ? expenseRows.map(r => `
-      <div class="bar-row">
-        <div class="bar-row-head"><span>${escapeHtml(r.name)}</span><strong>${F.formatMoney(r.amountCents)}</strong></div>
-        <div class="bar-track"><div class="bar-fill expense" style="width:${Math.max(4, Math.round(r.amountCents / maxExpense * 100))}%"></div></div>
-      </div>`).join("") : '<div class="leader-empty">Расходов пока нет.</div>';
-
-    const teamMap = new Map();
-    state.projects.forEach(project => project.members.forEach(userId => {
-      teamMap.set(String(userId), (teamMap.get(String(userId)) || 0) + 1);
-    }));
-    const teamRows = [...teamMap.entries()]
-      .map(([userId, count]) => ({ userId, count, name: userName(userId) }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-    $("leaderTeamLoad").innerHTML = teamRows.length ? teamRows.map(row => `
-      <div class="team-load-item">
-        <div class="team-load-person"><span class="avatar-circle">${escapeHtml(initials(row.name))}</span><div><strong>${escapeHtml(row.name)}</strong><small>Участник команды</small></div></div>
-        <span class="team-load-count">${row.count} ${pluralProjects(row.count)}</span>
-      </div>`).join("") : '<div class="leader-empty">Сотрудники ещё не назначены на проекты.</div>';
-  }
-
   function render() {
     renderSummary();
     renderProjects();
     renderSelects();
     renderOperations();
     renderCategories();
-    renderLeader();
   }
 
   function showMain() {
@@ -870,7 +777,7 @@
 
   function switchTab(name) {
     qsa(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
-    ["projects", "operations", "categories", "leader"].forEach(tab => {
+    ["projects", "operations", "categories"].forEach(tab => {
       $(`${tab}Tab`).classList.toggle("hidden", tab !== name);
     });
   }
@@ -931,27 +838,19 @@
 
     if (state.mode === "bitrix") {
       await api.init();
-      state.isLeader = typeof BX24.isAdmin === "function" ? BX24.isAdmin() : false;
       try {
         const current = await api.call("user.current");
         state.currentUser = current.data;
-        state.isLeader = state.isLeader || current.data.ADMIN === true || current.data.ADMIN === "Y" || current.data.IS_ADMIN === true || current.data.IS_ADMIN === "Y";
         const name = [current.data.NAME, current.data.LAST_NAME].filter(Boolean).join(" ");
         $("userBadge").textContent = name || `Сотрудник #${current.data.ID}`;
         state.users.set(String(current.data.ID), name);
       } catch {
-        state.isLeader = false;
         $("userBadge").textContent = "Сотрудник Битрикс24";
       }
     } else {
       state.currentUser = { ID: "11", NAME: "Анна", LAST_NAME: "Смирнова", ADMIN: true };
-      state.isLeader = true;
       $("userBadge").textContent = "Анна Смирнова";
     }
-
-    $("leaderTabButton").classList.toggle("hidden", !state.isLeader);
-    $("roleBadge").classList.toggle("hidden", !state.isLeader);
-    if (state.isLeader) $("roleBadge").textContent = "Руководитель";
 
     try {
       state.schema = await storage.discover();
@@ -994,6 +893,7 @@
 
   $("addProjectBtn").addEventListener("click", () => newProject());
   $("addOperationBtn").addEventListener("click", () => newOperation());
+
   $("addCategoryBtn").addEventListener("click", () => {
     $("categoryForm").reset();
     openModal("categoryModal");

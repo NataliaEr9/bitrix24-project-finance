@@ -40,7 +40,6 @@
       </div>
       <div class="topbar-actions">
         <span id="modeBadge" class="badge"></span>
-        <span id="roleBadge" class="role-badge hidden">Руководитель</span>
         <span id="userBadge" class="user-badge">Загрузка…</span>
       </div>
     </header>
@@ -77,7 +76,6 @@
               <button class="tab active" data-tab="projects"><svg class="svg-icon"><use href="#icon-folder"></use></svg><span>Проекты</span></button>
               <button class="tab" data-tab="operations"><svg class="svg-icon"><use href="#icon-receipt"></use></svg><span>Операции</span></button>
               <button class="tab" data-tab="categories"><svg class="svg-icon"><use href="#icon-tag"></use></svg><span>Статьи</span></button>
-              <button id="leaderTabButton" class="tab hidden" data-tab="leader"><svg class="svg-icon"><use href="#icon-chart"></use></svg><span>Руководителю</span></button>
             </div>
             <div class="toolbar-actions">
               <button id="addProjectBtn" class="btn btn-secondary"><svg class="svg-icon"><use href="#icon-plus"></use></svg><span>Новый проект</span></button>
@@ -91,8 +89,6 @@
           <article class="metric-card expense-card"><div class="metric-icon"><svg class="svg-icon"><use href="#icon-expense"></use></svg></div><span>Расходы</span><strong id="totalExpense">0 ₽</strong><small>Все проекты</small></article>
           <article class="metric-card profit-card"><div class="metric-icon"><svg class="svg-icon"><use href="#icon-wallet"></use></svg></div><span>Прибыль</span><strong id="totalProfit">0 ₽</strong><small>Доходы − расходы</small></article>
           <article class="metric-card margin-card"><div class="metric-icon"><svg class="svg-icon"><use href="#icon-chart"></use></svg></div><span>Рентабельность</span><strong id="totalMargin">—</strong><small title="Прибыль / доходы × 100%">Прибыль / доходы</small></article>
-          <article class="metric-card count-card"><div class="metric-icon"><svg class="svg-icon"><use href="#icon-folder"></use></svg></div><span>Проекты</span><strong id="totalProjectsCount">0</strong><small>Всего в учёте</small></article>
-          <article class="metric-card count-card"><div class="metric-icon"><svg class="svg-icon"><use href="#icon-receipt"></use></svg></div><span>Операции</span><strong id="totalOperationsCount">0</strong><small>Доходы и расходы</small></article>
         </section>
 
         <section id="projectsTab" class="tab-panel">
@@ -147,55 +143,6 @@
           <div class="category-columns">
             <article class="category-panel"><div class="panel-head"><span class="panel-icon income"><svg class="svg-icon"><use href="#icon-income"></use></svg></span><div><h3>Доходы</h3><p>Статьи для поступлений по проектам</p></div></div><div id="incomeCategories" class="category-list"></div></article>
             <article class="category-panel"><div class="panel-head"><span class="panel-icon expense"><svg class="svg-icon"><use href="#icon-expense"></use></svg></span><div><h3>Расходы</h3><p>Статьи для затрат и себестоимости</p></div></div><div id="expenseCategories" class="category-list"></div></article>
-          </div>
-        </section>
-
-        <section id="leaderTab" class="tab-panel hidden">
-          <div class="leader-hero">
-            <div>
-              <span class="leader-kicker">Управленческий обзор</span>
-              <h2>Панель руководителя</h2>
-              <p>Быстро показывает, где компания зарабатывает, какие проекты требуют внимания и из чего складываются основные расходы.</p>
-            </div>
-            <div class="leader-note">Статусы рассчитываются автоматически по фактическим финансовым данным.</div>
-          </div>
-
-          <div id="leaderStatusSummary" class="leader-status-grid"></div>
-
-          <div class="leader-grid leader-grid-main">
-            <article class="leader-card">
-              <div class="leader-card-head">
-                <div><h3>Требуют внимания</h3><p>Убыточные проекты и проекты с низкой рентабельностью</p></div>
-                <span class="leader-card-icon warning"><svg class="svg-icon"><use href="#icon-chart"></use></svg></span>
-              </div>
-              <div id="leaderAttention" class="leader-list"></div>
-            </article>
-
-            <article class="leader-card">
-              <div class="leader-card-head">
-                <div><h3>Рейтинг по прибыли</h3><p>Сравнение финансового результата проектов</p></div>
-                <span class="leader-card-icon success"><svg class="svg-icon"><use href="#icon-income"></use></svg></span>
-              </div>
-              <div id="leaderProfitRanking" class="bar-list"></div>
-            </article>
-          </div>
-
-          <div class="leader-grid">
-            <article class="leader-card">
-              <div class="leader-card-head">
-                <div><h3>Структура расходов</h3><p>На какие статьи уходит больше всего денег</p></div>
-                <span class="leader-card-icon expense"><svg class="svg-icon"><use href="#icon-expense"></use></svg></span>
-              </div>
-              <div id="leaderExpenseBreakdown" class="bar-list"></div>
-            </article>
-
-            <article class="leader-card">
-              <div class="leader-card-head">
-                <div><h3>Загрузка команды</h3><p>Количество проектов у каждого сотрудника</p></div>
-                <span class="leader-card-icon users"><svg class="svg-icon"><use href="#icon-users"></use></svg></span>
-              </div>
-              <div id="leaderTeamLoad" class="team-load-list"></div>
-            </article>
           </div>
         </section>
       </section>
