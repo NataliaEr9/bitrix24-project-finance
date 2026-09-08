@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Финансы проектов — Битрикс24</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://api.bitrix24.com/api/v1/"></script>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Битрикс24 · внутреннее приложение</div>
+        <h1>Финансы проектов</h1>
+        <p class="subtitle">Доходы, расходы, прибыль и рентабельность по каждому проекту</p>
+      </div>
+      <div class="topbar-actions">
+        <span id="modeBadge" class="badge"></span>
+        <span id="userBadge" class="user-badge">Загрузка…</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="setupScreen" class="setup-card hidden">
+        <div class="setup-icon">⚙</div>
+        <h2>Нужно подготовить хранилище</h2>
+        <p>
+          Приложение хранит данные в универсальных списках Битрикс24.
+          Инициализацию достаточно выполнить один раз от имени администратора.
+        </p>
+        <button id="setupBtn" class="btn btn-primary">Инициализировать приложение</button>
+        <div id="setupProgress" class="setup-progress"></div>
+      </section>
+
+      <section id="mainScreen" class="hidden">
+        <div class="toolbar">
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="projects">Проекты</button>
+            <button class="tab" data-tab="operations">Операции</button>
+            <button class="tab" data-tab="categories">Статьи</button>
+          </div>
+          <div class="toolbar-actions">
+            <button id="addProjectBtn" class="btn btn-secondary">+ Проект</button>
+            <button id="addOperationBtn" class="btn btn-primary">+ Операция</button>
+          </div>
+        </div>
+
+        <section class="summary-grid">
+          <article class="metric-card">
+            <span>Доходы</span>
+            <strong id="totalIncome">0 ₽</strong>
+            <small>Все проекты</small>
+          </article>
+          <article class="metric-card">
+            <span>Расходы</span>
+            <strong id="totalExpense">0 ₽</strong>
+            <small>Все проекты</small>
+          </article>
+          <article class="metric-card">
+            <span>Прибыль</span>
+            <strong id="totalProfit">0 ₽</strong>
+            <small>Доходы − расходы</small>
+          </article>
+          <article class="metric-card">
+            <span>Рентабельность</span>
+            <strong id="totalMargin">—</strong>
+            <small title="Прибыль / доходы × 100%">Прибыль / доходы</small>
+          </article>
+        </section>
+
+        <section id="projectsTab" class="tab-panel">
+          <div class="section-head">
+            <div>
+              <h2>Проекты</h2>
+              <p>Финансовый результат и команда по каждому проекту</p>
+            </div>
+            <div class="search-wrap">
+              <input id="projectSearch" type="search" placeholder="Поиск проекта…" />
+            </div>
+          </div>
+          <div id="projectGrid" class="project-grid"></div>
+          <div id="projectsEmpty" class="empty hidden">
+            <strong>Проектов пока нет</strong>
+            <span>Создайте первый проект и добавьте финансовую операцию.</span>
+          </div>
+        </section>
+
+        <section id="operationsTab" class="tab-panel hidden">
+          <div class="section-head">
+            <div>
+              <h2>Операции</h2>
+              <p>Ручной журнал доходов и расходов</p>
+            </div>
+            <div class="filters">
+              <select id="operationProjectFilter"><option value="">Все проекты</option></select>
+              <select id="operationTypeFilter">
+                <option value="">Все типы</option>
+                <option value="income">Доходы</option>
+                <option value="expense">Расходы</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Дата</th>
+                  <th>Проект</th>
+                  <th>Тип</th>
+                  <th>Статья</th>
+                  <th>Комментарий</th>
+                  <th class="amount-cell">Сумма</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="operationsBody"></tbody>
+            </table>
+          </div>
+          <div id="operationsEmpty" class="empty hidden">
+            <strong>Операций пока нет</strong>
+            <span>Добавьте доход или расход по проекту.</span>
+          </div>
+        </section>
+
+        <section id="categoriesTab" class="tab-panel hidden">
+          <div class="section-head">
+            <div>
+              <h2>Статьи доходов и расходов</h2>
+              <p>Системные статьи уже созданы, пользовательские можно добавлять вручную.</p>
+            </div>
+            <button id="addCategoryBtn" class="btn btn-secondary">+ Новая статья</button>
+          </div>
+          <div class="category-columns">
+            <article class="category-panel">
+              <h3>Доходы</h3>
+              <div id="incomeCategories" class="category-list"></div>
+            </article>
+            <article class="category-panel">
+              <h3>Расходы</h3>
+              <div id="expenseCategories" class="category-list"></div>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <div id="projectModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="projectModalTitle">Новый проект</h2>
+          <p>Название и сотрудники проекта</p>
+        </div>
+        <button class="icon-btn" data-close="projectModal" aria-label="Закрыть">×</button>
+      </div>
+      <form id="projectForm">
+        <input id="projectId" type="hidden" />
+        <label class="field">
+          <span>Название проекта</span>
+          <input id="projectName" type="text" maxlength="120" required placeholder="Например: Новый корпоративный сайт" />
+        </label>
+        <div class="field">
+          <span>Сотрудники проекта</span>
+          <div id="memberChips" class="chips"></div>
+          <button id="selectMembersBtn" type="button" class="btn btn-ghost">Выбрать сотрудников</button>
+          <small>Можно выбрать нескольких сотрудников из структуры Битрикс24.</small>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close="projectModal">Отмена</button>
+          <button type="submit" class="btn btn-primary">Сохранить проект</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="operationModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="operationModalTitle">Новая операция</h2>
+          <p>Доход или расход по выбранному проекту</p>
+        </div>
+        <button class="icon-btn" data-close="operationModal" aria-label="Закрыть">×</button>
+      </div>
+      <form id="operationForm">
+        <input id="operationId" type="hidden" />
+        <div class="form-row">
+          <label class="field">
+            <span>Проект</span>
+            <select id="operationProject" required></select>
+          </label>
+          <label class="field">
+            <span>Тип</span>
+            <select id="operationType" required>
+              <option value="income">Доход</option>
+              <option value="expense">Расход</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Статья</span>
+          <select id="operationCategory" required></select>
+        </label>
+        <div class="form-row">
+          <label class="field">
+            <span>Сумма, ₽</span>
+            <input id="operationAmount" type="text" inputmode="decimal" required placeholder="150000,00" />
+          </label>
+          <label class="field">
+            <span>Дата</span>
+            <input id="operationDate" type="date" required />
+          </label>
+        </div>
+        <label class="field">
+          <span>Комментарий</span>
+          <textarea id="operationComment" rows="3" maxlength="500" placeholder="Необязательно"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close="operationModal">Отмена</button>
+          <button type="submit" class="btn btn-primary">Сохранить операцию</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="categoryModal" class="modal-backdrop hidden">
+    <div class="modal modal-small">
+      <div class="modal-head">
+        <div>
+          <h2>Новая статья</h2>
+          <p>Добавьте собственную статью учёта</p>
+        </div>
+        <button class="icon-btn" data-close="categoryModal" aria-label="Закрыть">×</button>
+      </div>
+      <form id="categoryForm">
+        <label class="field">
+          <span>Тип</span>
+          <select id="categoryType">
+            <option value="expense">Расход</option>
+            <option value="income">Доход</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Название</span>
+          <input id="categoryName" type="text" maxlength="100" required placeholder="Например: Реклама" />
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close="categoryModal">Отмена</button>
+          <button type="submit" class="btn btn-primary">Добавить статью</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="mockUserModal" class="modal-backdrop hidden">
+    <div class="modal modal-small">
+      <div class="modal-head">
+        <div>
+          <h2>Сотрудники</h2>
+          <p>Демо-выбор пользователей</p>
+        </div>
+        <button class="icon-btn" data-close="mockUserModal" aria-label="Закрыть">×</button>
+      </div>
+      <div id="mockUserList" class="mock-user-list"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close="mockUserModal">Отмена</button>
+        <button id="applyMockUsersBtn" type="button" class="btn btn-primary">Выбрать</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="financial.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
