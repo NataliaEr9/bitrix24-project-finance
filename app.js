@@ -33,7 +33,8 @@
     categories: [],
     operations: [],
     users: new Map(),
-    selectedMembers: []
+    selectedMembers: [],
+    isLeader: false
   };
 
   const $ = (id) => document.getElementById(id);
@@ -43,6 +44,62 @@
   const escapeHtml = (value) => String(value ?? "")
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+
+  function icon(name, extraClass = "") {
+    return `<svg class="svg-icon ${extraClass}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
+  }
+
+  function initials(fullName) {
+    const parts = String(fullName || "").trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "—";
+    return parts.slice(0, 2).map(part => part[0]?.toUpperCase() || "").join("");
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function memberChipHtml(name) {
+    return `<span class="member-pill"><span class="avatar-circle small">${escapeHtml(initials(name))}</span><span>${escapeHtml(name)}</span></span>`;
+  }
+
+  function profitFillWidth(marginPct) {
+    if (marginPct === null || marginPct === undefined || !Number.isFinite(marginPct)) return 0;
+    return clamp(Math.abs(marginPct), 0, 100);
+  }
+
+  function lastOperationDate(projectId) {
+    const dates = state.operations
+      .filter(o => o.projectId === String(projectId) && o.date)
+      .map(o => o.date)
+      .sort((a, b) => String(b).localeCompare(String(a)));
+    return dates[0] || "";
+  }
+
+
+  function projectStatus(projectId) {
+    const operations = state.operations.filter(o => o.projectId === String(projectId));
+    if (operations.length === 0) {
+      return { code: "empty", label: "Нет данных", hint: "По проекту ещё нет операций" };
+    }
+    const m = F.calcMetrics(operations);
+    if (m.profitCents < 0) {
+      return { code: "loss", label: "Убыточный", hint: "Расходы превышают доходы" };
+    }
+    if (m.marginPct !== null && m.marginPct < 20) {
+      return { code: "watch", label: "На контроле", hint: "Рентабельность ниже 20%" };
+    }
+    return { code: "profit", label: "Прибыльный", hint: "Рентабельность 20% и выше" };
+  }
+
+  function pluralProjects(count) {
+    const n = Math.abs(Number(count)) % 100;
+    const n1 = n % 10;
+    if (n > 10 && n < 20) return "проектов";
+    if (n1 > 1 && n1 < 5) return "проекта";
+    if (n1 === 1) return "проект";
+    return "проектов";
+  }
 
   function toast(message) {
     const el = $("toast");
@@ -564,6 +621,8 @@
     $("totalProfit").className = m.profitCents >= 0 ? "value-positive" : "value-negative";
     $("totalMargin").textContent = F.formatPercent(m.marginPct);
     $("totalMargin").className = m.marginPct !== null && m.marginPct >= 0 ? "value-positive" : "value-negative";
+    $("totalProjectsCount").textContent = String(state.projects.length);
+    $("totalOperationsCount").textContent = String(state.operations.length);
   }
 
   function renderProjects() {
@@ -573,25 +632,50 @@
 
     $("projectGrid").innerHTML = projects.map(project => {
       const m = projectMetrics(project.id);
-      const members = project.members.map(userName).join(", ") || "Не назначены";
+      const members = project.members.map(userName);
+      const membersHtml = members.length
+        ? members.map(memberChipHtml).join("")
+        : '<span class="member-pill empty">Сотрудники не назначены</span>';
+      const opCount = state.operations.filter(o => o.projectId === String(project.id)).length;
+      const lastDate = lastOperationDate(project.id);
+      const fillWidth = profitFillWidth(m.marginPct);
+      const fillClass = m.profitCents < 0 ? "negative" : "";
+
       return `
         <article class="project-card">
           <div class="project-card-head">
-            <h3>${escapeHtml(project.name)}</h3>
-            <div class="project-actions">
-              <button class="icon-btn edit-project" data-id="${project.id}" title="Редактировать">✎</button>
-              <button class="icon-btn delete-project" data-id="${project.id}" title="Удалить">×</button>
+            <div class="project-title-wrap">
+              <span class="project-icon-badge">${icon("folder")}</span>
+              <div>
+                <h3>${escapeHtml(project.name)}</h3>
+                <div class="project-meta-row">
+                  <span class="project-status status-${projectStatus(project.id).code}" title="${escapeHtml(projectStatus(project.id).hint)}">${projectStatus(project.id).label}</span>
+                  <span class="mini-badge">${icon("receipt")} ${opCount} ${opCount === 1 ? "операция" : opCount < 5 ? "операции" : "операций"}</span>
+                  <span class="mini-badge">${icon("calendar")} ${lastDate ? `последняя: ${formatDate(lastDate)}` : "без операций"}</span>
+                </div>
+              </div>
             </div>
+            <div class="project-actions">
+              <button class="action-icon-btn edit-project" data-id="${project.id}" title="Редактировать">${icon("edit")}</button>
+              <button class="action-icon-btn danger delete-project" data-id="${project.id}" title="Удалить">${icon("trash")}</button>
+            </div>
+          </div>
+          <div class="project-profitability">
+            <div class="profitability-line">
+              <span>Рентабельность проекта</span>
+              <strong class="${m.marginPct !== null && m.marginPct >= 0 ? "value-positive" : "value-negative"}">${F.formatPercent(m.marginPct)}</strong>
+            </div>
+            <div class="profit-bar"><div class="profit-bar-fill ${fillClass}" style="width:${fillWidth}%"></div></div>
           </div>
           <div class="project-metrics">
             <div class="project-stat"><span>Доходы</span><strong>${F.formatMoney(m.incomeCents)}</strong></div>
             <div class="project-stat"><span>Расходы</span><strong>${F.formatMoney(m.expenseCents)}</strong></div>
             <div class="project-stat"><span>Прибыль</span><strong class="${m.profitCents >= 0 ? "value-positive" : "value-negative"}">${F.formatMoney(m.profitCents)}</strong></div>
-            <div class="project-stat"><span>Рентабельность</span><strong class="${m.marginPct !== null && m.marginPct >= 0 ? "value-positive" : "value-negative"}">${F.formatPercent(m.marginPct)}</strong></div>
+            <div class="project-stat"><span>ROI</span><strong class="${m.roiPct !== null && m.roiPct >= 0 ? "value-positive" : "value-negative"}">${F.formatPercent(m.roiPct)}</strong></div>
           </div>
-          <div class="team-line">
-            <span>Команда</span>
-            <div class="team-names">${escapeHtml(members)}</div>
+          <div class="team-section">
+            <div class="team-caption">${icon("users")} Команда проекта</div>
+            <div class="team-members">${membersHtml}</div>
           </div>
         </article>`;
     }).join("");
@@ -610,14 +694,32 @@
     $("operationsBody").innerHTML = rows.map(o => `
       <tr>
         <td>${formatDate(o.date)}</td>
-        <td>${escapeHtml(projectName(o.projectId))}</td>
-        <td><span class="type-pill ${o.type}">${o.type === "income" ? "Доход" : "Расход"}</span></td>
-        <td>${escapeHtml(categoryName(o.categoryId))}</td>
-        <td>${escapeHtml(o.comment || "—")}</td>
-        <td class="amount-cell ${o.type === "income" ? "value-positive" : "value-negative"}">${o.type === "income" ? "+" : "−"}${F.formatMoney(o.amountCents)}</td>
         <td>
-          <button class="icon-btn edit-operation" data-id="${o.id}" title="Редактировать">✎</button>
-          <button class="icon-btn delete-operation" data-id="${o.id}" title="Удалить">×</button>
+          <div class="op-project-cell">
+            <span class="project-dot">${icon("folder")}</span>
+            <div>
+              <strong>${escapeHtml(projectName(o.projectId))}</strong>
+              <small>ID: ${escapeHtml(o.projectId)}</small>
+            </div>
+          </div>
+        </td>
+        <td><span class="type-pill ${o.type}">${icon(o.type === "income" ? "income" : "expense")} ${o.type === "income" ? "Доход" : "Расход"}</span></td>
+        <td>
+          <div class="category-cell">
+            <span class="category-icon small ${o.type}">${icon(o.type === "income" ? "income" : "expense")}</span>
+            <div class="category-copy">
+              <strong>${escapeHtml(categoryName(o.categoryId))}</strong>
+              <small>${o.type === "income" ? "Доходная статья" : "Расходная статья"}</small>
+            </div>
+          </div>
+        </td>
+        <td>${escapeHtml(o.comment || "—")}</td>
+        <td class="amount-cell"><span class="amount-badge ${o.type}">${o.type === "income" ? "+" : "−"}${F.formatMoney(o.amountCents)}</span></td>
+        <td>
+          <div class="row-actions">
+            <button class="action-icon-btn edit-operation" data-id="${o.id}" title="Редактировать">${icon("edit")}</button>
+            <button class="action-icon-btn danger delete-operation" data-id="${o.id}" title="Удалить">${icon("trash")}</button>
+          </div>
         </td>
       </tr>
     `).join("");
@@ -626,9 +728,15 @@
   function renderCategories() {
     const renderList = (type) => state.categories.filter(c => c.type === type).map(c => `
       <div class="category-item">
-        <span class="category-item-name">${escapeHtml(c.name)}</span>
+        <div class="category-main">
+          <span class="category-icon ${type}">${icon(type === "income" ? "income" : "expense")}</span>
+          <div class="category-copy">
+            <span class="category-item-name">${escapeHtml(c.name)}</span>
+            <small>${type === "income" ? "Статья доходов" : "Статья расходов"}</small>
+          </div>
+        </div>
         <span class="category-item-actions">
-          ${c.system ? '<span class="system-pill">системная</span>' : `<button class="icon-btn delete-category" data-id="${c.id}" title="Удалить">×</button>`}
+          ${c.system ? '<span class="system-pill">системная</span>' : `<button class="action-icon-btn danger delete-category" data-id="${c.id}" title="Удалить">${icon("trash")}</button>`}
         </span>
       </div>`).join("");
 
@@ -656,9 +764,89 @@
 
   function renderMemberChips() {
     $("memberChips").innerHTML = state.selectedMembers.map(m => `
-      <span class="chip">${escapeHtml(m.name)}
-        <button type="button" class="remove-member" data-id="${m.id}" aria-label="Удалить">×</button>
+      <span class="chip"><span class="avatar-circle small">${escapeHtml(initials(m.name))}</span><span>${escapeHtml(m.name)}</span>
+        <button type="button" class="remove-member" data-id="${m.id}" aria-label="Удалить">${icon("close")}</button>
       </span>`).join("");
+  }
+
+  function renderLeader() {
+    if (!state.isLeader) return;
+
+    const rows = state.projects.map(project => {
+      const metrics = projectMetrics(project.id);
+      const status = projectStatus(project.id);
+      return { project, metrics, status };
+    });
+
+    const profitable = rows.filter(r => r.status.code === "profit").length;
+    const watch = rows.filter(r => r.status.code === "watch").length;
+    const loss = rows.filter(r => r.status.code === "loss").length;
+    const noData = rows.filter(r => r.status.code === "empty").length;
+
+    $("leaderStatusSummary").innerHTML = [
+      { cls: "profit", label: "Прибыльные", value: profitable, note: "Рентабельность от 20%" },
+      { cls: "watch", label: "На контроле", value: watch, note: "Рентабельность ниже 20%" },
+      { cls: "loss", label: "Убыточные", value: loss, note: "Расходы выше доходов" },
+      { cls: "empty", label: "Без данных", value: noData, note: "Нет финансовых операций" }
+    ].map(item => `
+      <article class="leader-status-card ${item.cls}">
+        <span class="leader-status-dot"></span>
+        <div><span>${item.label}</span><strong>${item.value}</strong><small>${item.note}</small></div>
+      </article>`).join("");
+
+    const attention = rows
+      .filter(r => r.status.code === "loss" || r.status.code === "watch")
+      .sort((a, b) => a.metrics.profitCents - b.metrics.profitCents);
+
+    $("leaderAttention").innerHTML = attention.length ? attention.map(r => `
+      <div class="leader-list-item">
+        <div class="leader-list-main">
+          <span class="project-status status-${r.status.code}">${r.status.label}</span>
+          <div><strong>${escapeHtml(r.project.name)}</strong><small>${escapeHtml(r.status.hint)}</small></div>
+        </div>
+        <div class="leader-list-value ${r.metrics.profitCents >= 0 ? "value-positive" : "value-negative"}">
+          ${F.formatMoney(r.metrics.profitCents)}
+          <small>${F.formatPercent(r.metrics.marginPct)}</small>
+        </div>
+      </div>`).join("") : '<div class="leader-empty">Нет проектов, требующих внимания.</div>';
+
+    const profitRanking = [...rows].sort((a, b) => b.metrics.profitCents - a.metrics.profitCents);
+    const maxProfitAbs = Math.max(1, ...profitRanking.map(r => Math.abs(r.metrics.profitCents)));
+    $("leaderProfitRanking").innerHTML = profitRanking.length ? profitRanking.map((r, index) => {
+      const width = Math.max(4, Math.round(Math.abs(r.metrics.profitCents) / maxProfitAbs * 100));
+      return `
+        <div class="bar-row">
+          <div class="bar-row-head"><span><b>${index + 1}.</b> ${escapeHtml(r.project.name)}</span><strong class="${r.metrics.profitCents >= 0 ? "value-positive" : "value-negative"}">${F.formatMoney(r.metrics.profitCents)}</strong></div>
+          <div class="bar-track"><div class="bar-fill ${r.metrics.profitCents < 0 ? "negative" : "positive"}" style="width:${width}%"></div></div>
+        </div>`;
+    }).join("") : '<div class="leader-empty">Пока нет проектов для рейтинга.</div>';
+
+    const expenseMap = new Map();
+    state.operations.filter(o => o.type === "expense").forEach(o => {
+      expenseMap.set(o.categoryId, (expenseMap.get(o.categoryId) || 0) + o.amountCents);
+    });
+    const expenseRows = [...expenseMap.entries()]
+      .map(([categoryId, amountCents]) => ({ categoryId, amountCents, name: categoryName(categoryId) }))
+      .sort((a, b) => b.amountCents - a.amountCents);
+    const maxExpense = Math.max(1, ...expenseRows.map(r => r.amountCents));
+    $("leaderExpenseBreakdown").innerHTML = expenseRows.length ? expenseRows.map(r => `
+      <div class="bar-row">
+        <div class="bar-row-head"><span>${escapeHtml(r.name)}</span><strong>${F.formatMoney(r.amountCents)}</strong></div>
+        <div class="bar-track"><div class="bar-fill expense" style="width:${Math.max(4, Math.round(r.amountCents / maxExpense * 100))}%"></div></div>
+      </div>`).join("") : '<div class="leader-empty">Расходов пока нет.</div>';
+
+    const teamMap = new Map();
+    state.projects.forEach(project => project.members.forEach(userId => {
+      teamMap.set(String(userId), (teamMap.get(String(userId)) || 0) + 1);
+    }));
+    const teamRows = [...teamMap.entries()]
+      .map(([userId, count]) => ({ userId, count, name: userName(userId) }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    $("leaderTeamLoad").innerHTML = teamRows.length ? teamRows.map(row => `
+      <div class="team-load-item">
+        <div class="team-load-person"><span class="avatar-circle">${escapeHtml(initials(row.name))}</span><div><strong>${escapeHtml(row.name)}</strong><small>Участник команды</small></div></div>
+        <span class="team-load-count">${row.count} ${pluralProjects(row.count)}</span>
+      </div>`).join("") : '<div class="leader-empty">Сотрудники ещё не назначены на проекты.</div>';
   }
 
   function render() {
@@ -667,6 +855,7 @@
     renderSelects();
     renderOperations();
     renderCategories();
+    renderLeader();
   }
 
   function showMain() {
@@ -681,7 +870,7 @@
 
   function switchTab(name) {
     qsa(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
-    ["projects", "operations", "categories"].forEach(tab => {
+    ["projects", "operations", "categories", "leader"].forEach(tab => {
       $(`${tab}Tab`).classList.toggle("hidden", tab !== name);
     });
   }
@@ -737,24 +926,32 @@
   }
 
   async function bootstrap() {
-    $("modeBadge").textContent = state.mode === "bitrix" ? "Битрикс24" : "Демо-режим";
+    $("modeBadge").innerHTML = `${icon("spark")} <span>${state.mode === "bitrix" ? "Битрикс24" : "Демо-режим"}</span>`;
     $("modeBadge").classList.add(state.mode === "bitrix" ? "bitrix" : "demo");
 
     if (state.mode === "bitrix") {
       await api.init();
+      state.isLeader = typeof BX24.isAdmin === "function" ? BX24.isAdmin() : false;
       try {
         const current = await api.call("user.current");
         state.currentUser = current.data;
+        state.isLeader = state.isLeader || current.data.ADMIN === true || current.data.ADMIN === "Y" || current.data.IS_ADMIN === true || current.data.IS_ADMIN === "Y";
         const name = [current.data.NAME, current.data.LAST_NAME].filter(Boolean).join(" ");
         $("userBadge").textContent = name || `Сотрудник #${current.data.ID}`;
         state.users.set(String(current.data.ID), name);
       } catch {
+        state.isLeader = false;
         $("userBadge").textContent = "Сотрудник Битрикс24";
       }
     } else {
-      state.currentUser = { ID: "11", NAME: "Анна", LAST_NAME: "Смирнова" };
+      state.currentUser = { ID: "11", NAME: "Анна", LAST_NAME: "Смирнова", ADMIN: true };
+      state.isLeader = true;
       $("userBadge").textContent = "Анна Смирнова";
     }
+
+    $("leaderTabButton").classList.toggle("hidden", !state.isLeader);
+    $("roleBadge").classList.toggle("hidden", !state.isLeader);
+    if (state.isLeader) $("roleBadge").textContent = "Руководитель";
 
     try {
       state.schema = await storage.discover();
