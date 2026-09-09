@@ -28,6 +28,7 @@
   const state = {
     mode: window.self !== window.top && window.BX24 && typeof window.BX24.init === "function" ? "bitrix" : "mock",
     currentUser: null,
+    isAdmin: false,
     schema: null,
     projects: [],
     categories: [],
@@ -110,12 +111,34 @@
 
   function normalizeDate(value) {
     if (!value) return "";
-    return String(value).slice(0, 10);
+
+    const raw = String(value).trim();
+
+    // REST/HTML date: YYYY-MM-DD or ISO/datetime beginning with YYYY-MM-DD.
+    const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+    // Universal Lists may return a date formatted according to portal locale: DD.MM.YYYY.
+    const ruMatch = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})/);
+    if (ruMatch) return `${ruMatch[3]}-${ruMatch[2]}-${ruMatch[1]}`;
+
+    // Fallback for slash-separated dates sometimes returned by localized interfaces.
+    const slashMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+    if (slashMatch) return `${slashMatch[3]}-${slashMatch[2]}-${slashMatch[1]}`;
+
+    return "";
   }
 
   function formatDate(value) {
-    if (!value) return "—";
-    const d = new Date(`${normalizeDate(value)}T00:00:00`);
+    const normalized = normalizeDate(value);
+    if (!normalized) return "—";
+
+    // Parse components explicitly to avoid browser-dependent Date parsing and
+    // RangeError: Invalid time value for localized Bitrix24 date strings.
+    const [year, month, day] = normalized.split("-").map(Number);
+    const d = new Date(year, month - 1, day);
+    if (!Number.isFinite(d.getTime())) return "—";
+
     return new Intl.DateTimeFormat("ru-RU").format(d);
   }
 
@@ -174,6 +197,35 @@
     return map;
   }
 
+  function mapFieldMeta(fieldResult) {
+    const map = {};
+    Object.values(fieldResult || {}).forEach((field) => {
+      if (field && field.CODE) map[field.CODE] = field;
+    });
+    return map;
+  }
+
+  function enumIdByLabel(schema, listKey, codeName, label) {
+    const values = schema?.fieldMeta?.[listKey]?.[codeName]?.DISPLAY_VALUES_FORM || {};
+    const target = String(label || "").trim().toLowerCase();
+    const pair = Object.entries(values).find(([, value]) => String(value).trim().toLowerCase() === target);
+    return pair ? String(pair[0]) : "";
+  }
+
+  function enumLabel(schema, listKey, codeName, rawValue) {
+    if (rawValue === null || rawValue === undefined || rawValue === "") return "";
+    const raw = String(rawValue);
+    const values = schema?.fieldMeta?.[listKey]?.[codeName]?.DISPLAY_VALUES_FORM || {};
+    return String(values[raw] || raw);
+  }
+
+  function semanticTypeFromFriendly(schema, listKey, codeName, rawValue) {
+    const label = enumLabel(schema, listKey, codeName, rawValue).trim().toLowerCase();
+    if (label === "доход" || label === "income") return "income";
+    if (label === "расход" || label === "expense") return "expense";
+    return "";
+  }
+
   function propValues(row, fieldId) {
     if (!fieldId) return [];
     const raw = row[fieldId];
@@ -185,6 +237,47 @@
 
   function propOne(row, fieldId) {
     return propValues(row, fieldId)[0] ?? "";
+  }
+
+
+  function normalizeEntityReference(rawValue, entities) {
+    if (rawValue === null || rawValue === undefined || rawValue === "") return "";
+    const raw = String(rawValue).trim();
+    if (!raw) return "";
+
+    const exactId = (entities || []).find(entity => String(entity.id) === raw);
+    if (exactId) return String(exactId.id);
+
+    // Depending on field type / portal version, a linked-list value can be
+    // returned with additional display text. Prefer an ID that actually
+    // exists in the currently loaded target list.
+    const numericTokens = raw.match(/\d+/g) || [];
+    for (const token of numericTokens) {
+      const entity = (entities || []).find(item => String(item.id) === String(token));
+      if (entity) return String(entity.id);
+    }
+
+    const normalizedName = raw.toLocaleLowerCase("ru-RU");
+    const byName = (entities || []).find(entity =>
+      String(entity.name || "").trim().toLocaleLowerCase("ru-RU") === normalizedName
+    );
+    if (byName) return String(byName.id);
+
+    return raw;
+  }
+
+  function resolveEntityReference(legacyRaw, friendlyRaw, entities) {
+    // Use whichever value resolves to an element that really exists. This is
+    // important for old records and for records entered directly in Lists.
+    for (const raw of [legacyRaw, friendlyRaw]) {
+      const resolved = normalizeEntityReference(raw, entities);
+      if (resolved && (entities || []).some(entity => String(entity.id) === String(resolved))) {
+        return String(resolved);
+      }
+    }
+
+    return normalizeEntityReference(friendlyRaw, entities) ||
+      normalizeEntityReference(legacyRaw, entities) || "";
   }
 
   class BitrixStorage {
@@ -201,7 +294,7 @@
       const lists = Object.fromEntries(listEntries);
       if (!lists.projects || !lists.categories || !lists.operations) return null;
 
-      const schema = { lists: {}, fields: {} };
+      const schema = { lists: {}, fields: {}, fieldMeta: {} };
       for (const [key, list] of Object.entries(lists)) {
         schema.lists[key] = String(list.ID);
         const fields = await api.call("lists.field.get", {
@@ -209,6 +302,7 @@
           IBLOCK_ID: list.ID
         });
         schema.fields[key] = mapFieldObject(fields.data);
+        schema.fieldMeta[key] = mapFieldMeta(fields.data);
       }
       return schema;
     }
@@ -264,24 +358,28 @@
         if (exists) return;
 
         onProgress(`Создаю поле «${spec.name}»…`);
+        const fields = {
+          NAME: spec.name,
+          IS_REQUIRED: spec.required ? "Y" : "N",
+          MULTIPLE: spec.multiple ? "Y" : "N",
+          TYPE: spec.type,
+          SORT: spec.sort || 100,
+          CODE: spec.code,
+          SETTINGS: {
+            SHOW_ADD_FORM: spec.showInForm === false ? "N" : "Y",
+            SHOW_EDIT_FORM: spec.showInForm === false ? "N" : "Y",
+            ADD_READ_ONLY_FIELD: "N",
+            EDIT_READ_ONLY_FIELD: "N",
+            SHOW_FIELD_PREVIEW: "N"
+          }
+        };
+        if (spec.listTextValues) fields.LIST_TEXT_VALUES = spec.listTextValues;
+        if (spec.linkIblockId) fields.LINK_IBLOCK_ID = String(spec.linkIblockId);
+        if (spec.userTypeSettings) fields.USER_TYPE_SETTINGS = spec.userTypeSettings;
         await api.call("lists.field.add", {
           IBLOCK_TYPE_ID: "lists",
           IBLOCK_ID: listId,
-          FIELDS: {
-            NAME: spec.name,
-            IS_REQUIRED: spec.required ? "Y" : "N",
-            MULTIPLE: spec.multiple ? "Y" : "N",
-            TYPE: spec.type,
-            SORT: spec.sort || 100,
-            CODE: spec.code,
-            SETTINGS: {
-              SHOW_ADD_FORM: "Y",
-              SHOW_EDIT_FORM: "Y",
-              ADD_READ_ONLY_FIELD: "N",
-              EDIT_READ_ONLY_FIELD: "N",
-              SHOW_FIELD_PREVIEW: "N"
-            }
-          }
+          FIELDS: fields
         });
       };
 
@@ -300,8 +398,10 @@
       await ensureField(operationId, { name: "Дата", code: "OP_DATE", type: "S:Date", required: true, sort: 140 });
       await ensureField(operationId, { name: "Комментарий", code: "COMMENT", type: "S", sort: 150 });
 
-      const schema = await this.discover();
+      let schema = await this.discover();
       if (!schema) throw new Error("Не удалось прочитать созданную структуру");
+
+      schema = await this.ensureFriendlyStructure(schema, onProgress);
 
       const existingCategories = await api.all("lists.element.get", {
         IBLOCK_TYPE_ID: "lists",
@@ -310,7 +410,7 @@
       const cf = schema.fields.categories;
       const normalized = existingCategories.map(row => ({
         name: String(row.NAME || "").trim().toLowerCase(),
-        type: propOne(row, cf.TYPE)
+        type: semanticTypeFromFriendly(schema, "categories", "TYPE_VIEW", propOne(row, cf.TYPE_VIEW)) || propOne(row, cf.TYPE)
       }));
 
       onProgress("Проверяю обязательные статьи…");
@@ -321,7 +421,232 @@
         if (!exists) await this.addCategory(schema, category);
       }
 
-      return schema;
+      return await this.discover();
+    }
+
+    async ensureFriendlyStructure(schema, onProgress = () => {}) {
+      const fieldSpecs = [
+        {
+          key: "categories",
+          spec: {
+            name: "Тип статьи",
+            code: "TYPE_VIEW",
+            type: "L",
+            required: true,
+            sort: 90,
+            listTextValues: "Доход\nРасход"
+          }
+        },
+        {
+          key: "operations",
+          spec: {
+            name: "Проект",
+            code: "PROJECT_REF",
+            type: "E:EList",
+            required: true,
+            sort: 90,
+            linkIblockId: schema.lists.projects,
+            userTypeSettings: { size: 1, width: 0, group: "N", multiple: "N" }
+          }
+        },
+        {
+          key: "operations",
+          spec: {
+            name: "Тип",
+            code: "TYPE_VIEW",
+            type: "L",
+            required: true,
+            sort: 100,
+            listTextValues: "Доход\nРасход"
+          }
+        },
+        {
+          key: "operations",
+          spec: {
+            name: "Статья",
+            code: "CATEGORY_REF",
+            type: "E:EList",
+            required: true,
+            sort: 110,
+            linkIblockId: schema.lists.categories,
+            userTypeSettings: { size: 1, width: 0, group: "N", multiple: "N" }
+          }
+        },
+        {
+          key: "operations",
+          spec: {
+            name: "Сумма, ₽",
+            code: "AMOUNT_RUB",
+            type: "N",
+            required: true,
+            sort: 120
+          }
+        }
+      ];
+
+      const addField = async (listId, spec) => {
+        const currentMeta = schema.fieldMeta?.[spec.key] || {};
+        if (currentMeta[spec.code]) return false;
+        onProgress(`Создаю удобное поле «${spec.name}»…`);
+        const fields = {
+          NAME: spec.name,
+          IS_REQUIRED: spec.required ? "Y" : "N",
+          MULTIPLE: spec.multiple ? "Y" : "N",
+          TYPE: spec.type,
+          SORT: spec.sort || 100,
+          CODE: spec.code,
+          SETTINGS: {
+            SHOW_ADD_FORM: "Y",
+            SHOW_EDIT_FORM: "Y",
+            ADD_READ_ONLY_FIELD: "N",
+            EDIT_READ_ONLY_FIELD: "N",
+            SHOW_FIELD_PREVIEW: "N"
+          }
+        };
+        if (spec.listTextValues) fields.LIST_TEXT_VALUES = spec.listTextValues;
+        if (spec.linkIblockId) fields.LINK_IBLOCK_ID = String(spec.linkIblockId);
+        if (spec.userTypeSettings) fields.USER_TYPE_SETTINGS = spec.userTypeSettings;
+        await api.call("lists.field.add", {
+          IBLOCK_TYPE_ID: "lists",
+          IBLOCK_ID: listId,
+          FIELDS: fields
+        });
+        return true;
+      };
+
+      let changed = false;
+      for (const item of fieldSpecs) {
+        const spec = { ...item.spec, key: item.key };
+        if (!schema.fieldMeta?.[item.key]?.[spec.code]) {
+          changed = await addField(schema.lists[item.key], spec) || changed;
+        }
+      }
+
+      if (changed) {
+        schema = await this.discover();
+      }
+
+      await this.migrateFriendlyValues(schema, onProgress);
+      await this.hideLegacyFields(schema);
+      return await this.discover();
+    }
+
+    async hideLegacyFields(schema) {
+      const hideOne = async (listKey, codeName) => {
+        const meta = schema.fieldMeta?.[listKey]?.[codeName];
+        if (!meta?.FIELD_ID) return;
+        if (meta.SETTINGS?.SHOW_ADD_FORM === "N" && meta.SETTINGS?.SHOW_EDIT_FORM === "N" && meta.IS_REQUIRED === "N") return;
+        try {
+          const fields = {
+            NAME: meta.NAME,
+            TYPE: meta.TYPE,
+            IS_REQUIRED: "N",
+            MULTIPLE: meta.MULTIPLE || "N",
+            SORT: Number(meta.SORT || 500),
+            CODE: meta.CODE,
+            SETTINGS: {
+              ...(meta.SETTINGS || {}),
+              SHOW_ADD_FORM: "N",
+              SHOW_EDIT_FORM: "N",
+              ADD_READ_ONLY_FIELD: "N",
+              EDIT_READ_ONLY_FIELD: "N",
+              SHOW_FIELD_PREVIEW: "N"
+            }
+          };
+          if (meta.LINK_IBLOCK_ID) fields.LINK_IBLOCK_ID = meta.LINK_IBLOCK_ID;
+          if (meta.USER_TYPE_SETTINGS) fields.USER_TYPE_SETTINGS = meta.USER_TYPE_SETTINGS;
+          await api.call("lists.field.update", {
+            IBLOCK_TYPE_ID: "lists",
+            IBLOCK_ID: schema.lists[listKey],
+            FIELD_ID: meta.FIELD_ID,
+            FIELDS: fields
+          });
+        } catch (e) {
+          console.warn(`Не удалось скрыть служебное поле ${listKey}.${codeName}:`, e);
+        }
+      };
+
+      await hideOne("categories", "TYPE");
+      await hideOne("categories", "SYSTEM");
+      await hideOne("operations", "PROJECT_ID");
+      await hideOne("operations", "TYPE");
+      await hideOne("operations", "CATEGORY_ID");
+      await hideOne("operations", "AMOUNT_CENTS");
+    }
+
+    async migrateFriendlyValues(schema, onProgress = () => {}) {
+      const cf = schema.fields.categories;
+      const of = schema.fields.operations;
+      if (!cf.TYPE_VIEW || !of.PROJECT_REF || !of.TYPE_VIEW || !of.CATEGORY_REF || !of.AMOUNT_RUB) return;
+
+      const [categories, operations] = await Promise.all([
+        api.all("lists.element.get", {
+          IBLOCK_TYPE_ID: "lists",
+          IBLOCK_ID: schema.lists.categories
+        }),
+        api.all("lists.element.get", {
+          IBLOCK_TYPE_ID: "lists",
+          IBLOCK_ID: schema.lists.operations
+        })
+      ]);
+
+      const incomeCategoryEnum = enumIdByLabel(schema, "categories", "TYPE_VIEW", "Доход");
+      const expenseCategoryEnum = enumIdByLabel(schema, "categories", "TYPE_VIEW", "Расход");
+      const incomeOperationEnum = enumIdByLabel(schema, "operations", "TYPE_VIEW", "Доход");
+      const expenseOperationEnum = enumIdByLabel(schema, "operations", "TYPE_VIEW", "Расход");
+
+      let migrated = 0;
+      for (const row of categories) {
+        if (propOne(row, cf.TYPE_VIEW)) continue;
+        const legacyType = propOne(row, cf.TYPE);
+        const enumId = legacyType === "income" ? incomeCategoryEnum : legacyType === "expense" ? expenseCategoryEnum : "";
+        if (!enumId) continue;
+        await api.call("lists.element.update", {
+          IBLOCK_TYPE_ID: "lists",
+          IBLOCK_ID: schema.lists.categories,
+          ELEMENT_ID: row.ID,
+          FIELDS: { NAME: row.NAME, [cf.TYPE_VIEW]: enumId }
+        });
+        migrated += 1;
+      }
+
+      for (const row of operations) {
+        const fields = { NAME: row.NAME };
+        let needsUpdate = false;
+        const legacyType = propOne(row, of.TYPE);
+
+        if (!propOne(row, of.PROJECT_REF) && propOne(row, of.PROJECT_ID)) {
+          fields[of.PROJECT_REF] = propOne(row, of.PROJECT_ID);
+          needsUpdate = true;
+        }
+        if (!propOne(row, of.TYPE_VIEW)) {
+          const enumId = legacyType === "income" ? incomeOperationEnum : legacyType === "expense" ? expenseOperationEnum : "";
+          if (enumId) {
+            fields[of.TYPE_VIEW] = enumId;
+            needsUpdate = true;
+          }
+        }
+        if (!propOne(row, of.CATEGORY_REF) && propOne(row, of.CATEGORY_ID)) {
+          fields[of.CATEGORY_REF] = propOne(row, of.CATEGORY_ID);
+          needsUpdate = true;
+        }
+        if (!propOne(row, of.AMOUNT_RUB) && propOne(row, of.AMOUNT_CENTS)) {
+          fields[of.AMOUNT_RUB] = Number(propOne(row, of.AMOUNT_CENTS)) / 100;
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await api.call("lists.element.update", {
+            IBLOCK_TYPE_ID: "lists",
+            IBLOCK_ID: schema.lists.operations,
+            ELEMENT_ID: row.ID,
+            FIELDS: fields
+          });
+          migrated += 1;
+        }
+      }
+
+      if (migrated) onProgress(`Переношу существующие данные в удобные поля: ${migrated} записей.`);
     }
 
     async load(schema) {
@@ -356,21 +681,50 @@
       state.categories = categoriesRaw.map(row => ({
         id: String(row.ID),
         name: row.NAME,
-        type: propOne(row, cf.TYPE),
+        type: semanticTypeFromFriendly(schema, "categories", "TYPE_VIEW", propOne(row, cf.TYPE_VIEW)) || propOne(row, cf.TYPE),
         system: propOne(row, cf.SYSTEM) === "Y"
-      }));
+      })).filter(category => category.type === "income" || category.type === "expense");
 
-      state.operations = operationsRaw.map(row => ({
-        id: String(row.ID),
-        name: row.NAME,
-        projectId: propOne(row, of.PROJECT_ID),
-        type: propOne(row, of.TYPE),
-        categoryId: propOne(row, of.CATEGORY_ID),
-        amountCents: Number(propOne(row, of.AMOUNT_CENTS) || 0),
-        date: normalizeDate(propOne(row, of.OP_DATE)),
-        comment: propOne(row, of.COMMENT),
-        createdBy: String(row.CREATED_BY || "")
-      }));
+      state.operations = operationsRaw.map(row => {
+        const legacyProject = propOne(row, of.PROJECT_ID);
+        const friendlyProject = propOne(row, of.PROJECT_REF);
+        const legacyCategory = propOne(row, of.CATEGORY_ID);
+        const friendlyCategory = propOne(row, of.CATEGORY_REF);
+
+        const projectId = resolveEntityReference(legacyProject, friendlyProject, state.projects);
+        const categoryId = resolveEntityReference(legacyCategory, friendlyCategory, state.categories);
+
+        const legacyType = propOne(row, of.TYPE);
+        const friendlyType = semanticTypeFromFriendly(schema, "operations", "TYPE_VIEW", propOne(row, of.TYPE_VIEW));
+        const type = legacyType === "income" || legacyType === "expense" ? legacyType : friendlyType;
+
+        const legacyAmountRaw = propOne(row, of.AMOUNT_CENTS);
+        const friendlyAmountRaw = propOne(row, of.AMOUNT_RUB);
+        let amountCents = Number(legacyAmountRaw);
+        if (!Number.isSafeInteger(amountCents)) {
+          try { amountCents = F.toCents(String(friendlyAmountRaw)); }
+          catch { amountCents = 0; }
+        }
+
+        return {
+          id: String(row.ID),
+          name: row.NAME,
+          projectId,
+          type,
+          categoryId,
+          amountCents,
+          date: normalizeDate(propOne(row, of.OP_DATE)),
+          comment: propOne(row, of.COMMENT),
+          createdBy: String(row.CREATED_BY || ""),
+          linkedProjectExists: state.projects.some(project => project.id === String(projectId)),
+          linkedCategoryExists: state.categories.some(category => category.id === String(categoryId))
+        };
+      }).filter(operation =>
+        operation.projectId &&
+        operation.categoryId &&
+        (operation.type === "income" || operation.type === "expense") &&
+        Number.isSafeInteger(operation.amountCents)
+      );
 
       await this.loadUsers();
     }
@@ -418,13 +772,21 @@
     async saveOperation(schema, operation) {
       const of = schema.fields.operations;
       const fields = { NAME: `${operation.type === "income" ? "Доход" : "Расход"} · ${operation.date}` };
-      fields[of.PROJECT_ID] = operation.projectId;
-      fields[of.TYPE] = operation.type;
-      fields[of.CATEGORY_ID] = operation.categoryId;
-      fields[of.AMOUNT_CENTS] = operation.amountCents;
+      if (of.PROJECT_ID) fields[of.PROJECT_ID] = operation.projectId;
+      if (of.TYPE) fields[of.TYPE] = operation.type;
+      if (of.CATEGORY_ID) fields[of.CATEGORY_ID] = operation.categoryId;
+      if (of.AMOUNT_CENTS) fields[of.AMOUNT_CENTS] = operation.amountCents;
+      if (of.PROJECT_REF) fields[of.PROJECT_REF] = operation.projectId;
+      if (of.TYPE_VIEW) {
+        const enumId = enumIdByLabel(schema, "operations", "TYPE_VIEW", operation.type === "income" ? "Доход" : "Расход");
+        if (enumId) fields[of.TYPE_VIEW] = enumId;
+      }
+      if (of.CATEGORY_REF) fields[of.CATEGORY_REF] = operation.categoryId;
+      if (of.AMOUNT_RUB) fields[of.AMOUNT_RUB] = operation.amountCents / 100;
       fields[of.OP_DATE] = operation.date;
       fields[of.COMMENT] = operation.comment;
 
+      let savedId = operation.id ? String(operation.id) : "";
       if (operation.id) {
         await api.call("lists.element.update", {
           IBLOCK_TYPE_ID: "lists",
@@ -433,13 +795,29 @@
           FIELDS: fields
         });
       } else {
-        await api.call("lists.element.add", {
+        const added = await api.call("lists.element.add", {
           IBLOCK_TYPE_ID: "lists",
           IBLOCK_ID: schema.lists.operations,
           ELEMENT_CODE: code("operation"),
           FIELDS: fields
         });
+        savedId = String(added.data || "");
       }
+
+      if (!savedId) throw new Error("Битрикс24 не вернул ID сохранённой операции");
+
+      // Verify that the element exists in the actual PF · Операции list.
+      const verification = await api.call("lists.element.get", {
+        IBLOCK_TYPE_ID: "lists",
+        IBLOCK_ID: schema.lists.operations,
+        ELEMENT_ID: savedId
+      });
+      const savedRows = Array.isArray(verification.data) ? verification.data : [];
+      if (!savedRows.some(row => String(row.ID) === savedId)) {
+        throw new Error("Операция не найдена в списке PF · Операции после сохранения");
+      }
+
+      return savedId;
     }
 
     async deleteOperation(schema, id) {
@@ -453,8 +831,12 @@
     async addCategory(schema, category) {
       const cf = schema.fields.categories;
       const fields = { NAME: category.name };
-      fields[cf.TYPE] = category.type;
-      fields[cf.SYSTEM] = category.system ? "Y" : "N";
+      if (cf.TYPE) fields[cf.TYPE] = category.type;
+      if (cf.SYSTEM) fields[cf.SYSTEM] = category.system ? "Y" : "N";
+      if (cf.TYPE_VIEW) {
+        const enumId = enumIdByLabel(schema, "categories", "TYPE_VIEW", category.type === "income" ? "Доход" : "Расход");
+        if (enumId) fields[cf.TYPE_VIEW] = enumId;
+      }
       await api.call("lists.element.add", {
         IBLOCK_TYPE_ID: "lists",
         IBLOCK_ID: schema.lists.categories,
@@ -841,6 +1223,9 @@
       try {
         const current = await api.call("user.current");
         state.currentUser = current.data;
+        state.isAdmin = typeof BX24.isAdmin === "function"
+          ? Boolean(BX24.isAdmin())
+          : [true, "Y", 1, "1"].includes(current.data.ADMIN);
         const name = [current.data.NAME, current.data.LAST_NAME].filter(Boolean).join(" ");
         $("userBadge").textContent = name || `Сотрудник #${current.data.ID}`;
         state.users.set(String(current.data.ID), name);
@@ -849,6 +1234,7 @@
       }
     } else {
       state.currentUser = { ID: "11", NAME: "Анна", LAST_NAME: "Смирнова", ADMIN: true };
+      state.isAdmin = true;
       $("userBadge").textContent = "Анна Смирнова";
     }
 
@@ -857,6 +1243,13 @@
       if (!state.schema) {
         showSetup();
         return;
+      }
+      if (state.mode === "bitrix" && state.isAdmin) {
+        try {
+          state.schema = await storage.ensureFriendlyStructure(state.schema);
+        } catch (migrationError) {
+          console.warn("Не удалось автоматически обновить структуру списков:", migrationError);
+        }
       }
       await reloadData();
       showMain();
@@ -890,6 +1283,24 @@
   qsa(".modal-backdrop").forEach(backdrop => backdrop.addEventListener("click", (e) => {
     if (e.target === backdrop) closeModal(backdrop.id);
   }));
+
+  $("refreshDataBtn").addEventListener("click", async () => {
+    const button = $("refreshDataBtn");
+    button.disabled = true;
+    try {
+      if (state.mode === "bitrix") {
+        const freshSchema = await storage.discover();
+        if (freshSchema) state.schema = freshSchema;
+      }
+      await reloadData();
+      toast(state.mode === "bitrix" ? "Данные обновлены из списков Битрикс24" : "Демо-данные обновлены");
+    } catch (err) {
+      console.error(err);
+      toast(`Не удалось обновить данные: ${err.message}`);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   $("addProjectBtn").addEventListener("click", () => newProject());
   $("addOperationBtn").addEventListener("click", () => newOperation());
@@ -952,10 +1363,21 @@
       const category = state.categories.find(c => c.id === operation.categoryId);
       if (!category || category.type !== operation.type) throw new Error("Статья не соответствует типу операции");
 
-      await storage.saveOperation(state.schema, operation);
+      const savedId = await storage.saveOperation(state.schema, operation);
       await reloadData();
+
+      if (state.mode === "bitrix") {
+        const saved = state.operations.find(item => item.id === String(savedId));
+        if (!saved) {
+          throw new Error("Операция сохранена в Битрикс24, но не удалось загрузить её в отчёт. Нажмите «Обновить данные».");
+        }
+        if (!saved.linkedProjectExists) {
+          throw new Error("Операция сохранена, но связь с проектом не распознана. Обновите данные и проверьте поле «Проект» в PF · Операции.");
+        }
+      }
+
       closeModal("operationModal");
-      toast(operation.id ? "Операция обновлена" : "Операция добавлена");
+      toast(operation.id ? "Операция обновлена" : "Операция добавлена и привязана к проекту");
     } catch (err) { toast(err.message); }
   });
 
